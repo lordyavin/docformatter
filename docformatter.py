@@ -42,7 +42,7 @@ import tokenize
 import untokenize
 
 
-__version__ = '1.1'
+__version__ = '1.3.1'
 
 
 try:
@@ -53,9 +53,14 @@ except NameError:
 
 HEURISTIC_MIN_LIST_ASPECT_RATIO = .4
 
+CR = '\r'
+LF = '\n'
+CRLF = '\r\n'
 
-class FormatResult(object):  # pylint: disable=too-few-public-methods, useless-object-inheritance
+
+class FormatResult(object):
     """Possible exit codes."""
+
     ok = 0
     error = 1
     interrupted = 2
@@ -70,7 +75,10 @@ def format_code(source, **kwargs):
     See "_format_code()" for parameters.
     """
     try:
-        return _format_code(source, **kwargs)
+        original_newline = find_newline(source.splitlines(True))
+        code = _format_code(source, **kwargs)
+
+        return normalize_line_endings(code.splitlines(True), original_newline)
     except (tokenize.TokenError, IndentationError):
         return source
 
@@ -250,7 +258,11 @@ def is_probably_beginning_of_sentence(line):
         if re.search(r'\s' + token + r'\s', line):
             return True
 
-    return re.match(r'[^\w"\'`\(\)]', line.strip())
+    stripped_line = line.strip()
+    is_beginning_of_sentence = re.match(r'[^\w"\'`\(\)]', stripped_line)
+    is_pydoc_ref = re.match(r'^:\w+:', stripped_line)
+
+    return is_beginning_of_sentence and not is_pydoc_ref
 
 
 def split_summary_and_description(contents):
@@ -379,6 +391,43 @@ def _find_shortest_indentation(lines):
                 indentation = _indent
 
     return indentation or ''
+
+
+def find_newline(source):
+    """Return type of newline used in source.
+
+    Input is a list of lines.
+    """
+    assert not isinstance(source, unicode)
+
+    counter = collections.defaultdict(int)
+    for line in source:
+        if line.endswith(CRLF):
+            counter[CRLF] += 1
+        elif line.endswith(CR):
+            counter[CR] += 1
+        elif line.endswith(LF):
+            counter[LF] += 1
+    return (sorted(counter, key=counter.get, reverse=True) or [LF])[0]
+
+
+def normalize_line(line, newline):
+    """Return line with fixed ending, if ending was present in line.
+
+    Otherwise, does nothing.
+    """
+    stripped = line.rstrip('\n\r')
+    if stripped != line:
+        return stripped + newline
+    return line
+
+
+def normalize_line_endings(lines, newline):
+    """Return fixed line endings.
+
+    All lines will be modified to use the most common line ending.
+    """
+    return ''.join([normalize_line(line, newline) for line in lines])
 
 
 def strip_docstring(docstring):
@@ -553,9 +602,11 @@ def _main(argv, standard_out, standard_error, standard_in):
     parser = argparse.ArgumentParser(description=__doc__, prog='docformatter')
     changes = parser.add_mutually_exclusive_group()
     changes.add_argument('-i', '--in-place', action='store_true',
-                         help='make changes to files instead of printing diffs')
+                         help='make changes to files instead of printing '
+                              'diffs')
     changes.add_argument('-c', '--check', action='store_true',
-                         help='only check and report incorrectly formatted files')
+                         help='only check and report incorrectly formatted '
+                              'files')
     parser.add_argument('-r', '--recursive', action='store_true',
                         help='drill down directories recursively')
     parser.add_argument('--wrap-summaries', default=79, type=int,
@@ -644,7 +695,7 @@ def _get_encoding():
 def find_py_files(sources, recursive):
     """Find Python source files.
 
-    Parameters:
+    Parameters
         - sources: iterable with paths as strings.
         - recursive: drill down directories if True.
 
@@ -673,7 +724,8 @@ def _format_files(args, standard_out, standard_error):
     outcomes = collections.Counter()
     for filename in find_py_files(set(args.files), args.recursive):
         try:
-            result = format_file(filename, args=args, standard_out=standard_out)
+            result = format_file(filename, args=args,
+                                 standard_out=standard_out)
             outcomes[result] += 1
             if result == FormatResult.check_failed:
                 print(unicode(filename), file=standard_error)
